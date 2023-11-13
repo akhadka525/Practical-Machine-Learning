@@ -1,0 +1,12 @@
+---
+title: "Reproducible Research: Peer Assessment 1"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r include = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```

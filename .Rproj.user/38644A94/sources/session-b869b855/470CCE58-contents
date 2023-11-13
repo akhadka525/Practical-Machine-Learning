@@ -1,0 +1,311 @@
+---
+title: Using Machine Learning Approach in Predicting the Manner in Which People do Exercise
+author: "Anil K. Khadka"
+date: "2023-11-12"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Abstract
+
+We predict the exercise doing behavior pattern of people based on the data collected from the accelerometers. We build the Random Forest model to predict the manner in which people do exercise, and the model successfully predict the behavior pattern with 99.41% accuracy.
+
+
+## Background
+
+With the help of gadgets like Fitbit, Nike FuelBand, and Jawbone Up, it's now reasonably cheap to gather a lot of data on an individual's activities. These kinds of gadgets are a component of the quantified self movement, which is a subset of enthusiasts that measure themselves on a regular basis for various reasons, such as being tech enthusiasts, to uncover patterns in their behavior, or to enhance their health. People frequently measure how much of a certain task they perform, but they hardly ever quantify how well they perform it. So, we will use the data from the accelerometers on the belt, forearm, arm, and dumbell of 6 participants who performs barbell lifts correctly or incorrectly in 5 different ways to predict the manner in which they do the exercise.
+
+We will build the machine learning (ML) model with better accuracy and apply that model to predict the manner in which they did the exercise. From the data we will use the *classe* variable as the outcome variable and other remaining as the predictor variables in the training and test datasets. The data is available from the following sources:
+
+The training data for this project are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+More information on Human Activity Recognition (HAR) data can be obtained from here:
+
+<http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har>
+
+## Data and Preprocessing
+
+We will use the training and test data from the following sources, through which it is made available. First we will load the necessary libraries that is required to load, preprocess, and setup ML algorithms. Here we will use the  *dplyr*, *caret*, *corrplot*,  *randomForest* and *rpart* libraries.
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+
+## Load the libraries into system memory and if not downloaded first download and load
+packages <- c("dplyr", "caret", "randomForest", "rpart", "corrplot")
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+        install.packages(packages[!installed_packages])
+}
+invisible(lapply(packages, library, character.only = TRUE))
+
+```
+
+
+#### 1. Download and load the data
+
+Then we download and load the data into system memory for further data processign and analysis.
+
+```{r, echo=TRUE, warning=FALSE,message=FALSE}
+
+dir_path <- getwd() ## Get the path of the current/working directory
+
+## Create data url and download the data
+
+data_url <- c(
+        "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+        "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+
+data_files <- c(
+        "pml-training.csv",
+        "pml-testing.csv")
+
+for (i in seq_along(data_url)){
+        
+        if (!file.exists(data_files[i])){
+                download.file(data_url[i], data_files[i])
+                cat("File", data_files[i], "downloaded succesfully. \n")
+        } else {
+                cat("File", data_files[i], "already exists.")
+        }
+        
+}
+
+```
+
+Let's load the training and test data to system memory and check the dimension of the training and test data.
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+
+pml_training <- read.csv("pml-training.csv")
+pml_testing <- read.csv("pml-testing.csv")
+
+dim(pml_training)
+dim(pml_testing)
+
+```
+
+We see that the training data has `r dim(pml_training)[1]` observations and `r dim(pml_training)[2]` variables, while the testing data has `r dim(pml_testing)[1]` observations and `r dim(pml_testing)[2]` variables. We can check the first few rows of the data to understand the data structure and classes of the variables using the following code. However, since we have large number of rows and columns in training set, we will not show the output here.
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE, results='hide'}
+
+head(pml_training, 5)
+str(pml_training)
+
+```
+
+
+#### 2. Cleaning the data and making it tidy
+
+Here we will remove the redundant variables. Looking at the data, we see that we will not need the variable such as username, and time stamps. So we will remove the first 7 columns. Also, there are variables which contains many observations as **NA** and do not carry any useful information. So, we will remove all the columns which have more than 80% **NA** data.
+
+```{r, echo=TRUE,warning=FALSE, message=FALSE}
+
+## Remove unwanted columns
+df_train <- pml_training[, -c(1:7)]
+df_test <- pml_testing[, -c(1:7)]
+
+## Remove variables with more than 80% NA data
+NAThreshold = dim(df_train)[1]*0.80
+FunctKeepCol <- function(x){
+        sum(is.na(x)) > NAThreshold || sum(x == "") > NAThreshold
+}
+keepCols <- !apply(df_train, 2, FunctKeepCol)
+
+df_train <- df_train[, keepCols]
+df_test <- df_test[, keepCols]
+
+```
+
+
+Now the tidy training dataset  contains `r dim(df_train)[1]` observations and `r dim(df_train)[2]` variables.
+
+## Exploratory Analysis
+
+Since we are going to predict the manner in which the person did the exercise, stored in variable *classe*, we can check the different levels of the variable and make comparison between the different levels in the training dastaset.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE, fig.align='center'}
+
+barplot(table(df_train$classe), col = "blue",
+        xlab = "Classe", ylab = "Frequency",
+        main = "Levels of variable Classe in training set")
+
+```
+
+
+From the above bar plot, we can see that the level A is most frequent with more than 5000 occurrences, whereas the other levels are within the same order of magnitude with more than 3000 occurrences.
+
+We can also check for the variables in training dataset which are highly correlated amongst each other so that we can remove them from the training dataset. Later we will construct ML model for both the dataset: (1) including all variables and (2) excluding highly correlated variables.
+
+```{r,echo=TRUE,warning=FALSE,message=FALSE, fig.align='center'}
+
+## Plot the correlation matrix
+corrplot <- cor(df_train[, -length(names(df_train))])
+corrplot(corrplot, method = "color", type = "lower", order = "hclust",
+         tl.cex = 0.7, tl.col = "black", tl.srt = 45, diag = FALSE)
+
+```
+
+
+From the correlation matrix plot, we can see that some of the features are highly correlated with each other. We will exclude these highly correlated variables in one of our model.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+## Find the highly correlated variables and remove them
+highCorrVar <- findCorrelation(corrplot, cutoff = 0.9, exact = TRUE)
+df_trainHighCorrRemove <- df_train[, -highCorrVar]
+df_testHighCorrRemove <- df_test[, -highCorrVar]
+
+```
+
+## Machine Learning Prediction Models
+
+Since *Random Forest Model* is known for its high accuracy, we will employ it here. It also selects important variables automatically, and is also robust to correlated covariates and outliers. However, we also can test the *Random Forest Model* with other model.
+
+#### 1. Cross validation
+
+For the cross validation of the model, we will use the sub-sample from the training dataset as 70% for training and 30% for cross validation. The cross validataion daatset will be used to test on the training dataset and once the most accurate model is choosen it will be tested on the original testing dataset.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+set.seed(142)
+trainIdx <- createDataPartition(df_train$classe, p = 0.7, list = FALSE)
+train <- df_train[trainIdx, ]
+validate <- df_train[-trainIdx, ]
+
+```
+
+
+#### 2. Predicting Models
+
+##### (i). Model with all variables (Model1:modRf1)
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+cvControl <- trainControl(method = "cv", number = 3, allowParallel = TRUE)
+
+modRf1 <- train(classe~., data=train,
+               method = "rf",
+               trControl = cvControl,
+               ntree=250)
+```
+               
+
+The model *modRf1* works really well on the dataset. The final selected model has the accuracy of 0.9886438 and kappa value 0.9856328 (see Appendix-1 for model statistics). To calculate the expected out of sample error, we will calculate the accuracy of the model in cross validation dataset. It will give the proportion of correct classified observations over the total sample in the training dataset.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+modRfValCasemodRf1 <- predict(modRf1, validate)
+cvAccuracymodRf1 <- confusionMatrix(modRfValCasemodRf1, factor(validate$classe))
+
+```
+
+We see that the model *modRf1* has the accuracy of 0.9941 for cross validation and has out-of-sample error of 0.5% only (see Appendix-2 for confusion matrix and overall statistics on cross validation).
+
+
+##### (ii). Model with highly correlated variables removed (Model2:modRf2)
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+cvControl <- trainControl(method = "cv", number = 3, allowParallel = TRUE)
+trainNew <- train[, -highCorrVar]
+validateNew <- validate[, -highCorrVar]
+modRf2 <- train(classe~., data=trainNew,
+               method = "rf",
+               trControl = cvControl,
+               ntree=250)
+
+```
+               
+               
+The model *modRf2* also works well on the dataset. The final selected model has the accuracy of 0.9887168 and kappa value 0.9857260 (see Appendix-3 for model statistics). Now let's calculate the expected out of sample error.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+modRfValCasemodRf2 <- predict(modRf2, validateNew)
+cvAccuracymodRf2 <- confusionMatrix(modRfValCasemodRf2, factor(validateNew$classe))
+
+```
+
+We see that the model *modRf2* has the accuracy of 0.9939  for cross validation and has out-of-sample error of 0.6% (see Appendix-4 for confusion matrix and overall statistics on cross validation).
+
+From these two models we see that the *Random Forest Model* handles the high correlated covariates very well and first model with all variables present works well. So, we will use the model *modRf1* for further predicting on actual test datasets.
+
+#### 3. Model selection and prediction
+
+We will use the model *modRf1* to predict on actual test set. We can check the error of the final model versus number of trees also. The plot below clearly indicates that the error sharply reduces with increase in number of trees.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE, fig.align='center'}
+
+plot(modRf1$finalModel, main = "Error Vs Trees")
+
+```
+
+
+Now, predicting in final test data.
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+prediction <- predict(modRf1, df_test)
+prediction
+
+```
+
+
+## Conclusion
+
+The *Random Forest* model was built and applied to the provided dataset to predict the manner in which the person will do the exercise. The *Random Forest* model successfully predict with the 99.41% accuracy.
+
+
+## References
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+<http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har>
+
+
+\newpage
+
+## Appendix
+
+### Appendix-1: Model1 (modRf1) Statistics
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+print(modRf1)
+
+```
+
+### Appendix-2: Model1 (modRf1) cross validation statistics
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+cvAccuracymodRf1
+
+```
+
+### Appendix-3: Model2 (modRf2) Statistics
+
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+modRf2
+
+```
+
+### Appendix-4: Model2 (modRf2) cross validation statistics
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+
+cvAccuracymodRf2
+
+```
+
